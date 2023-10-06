@@ -112,7 +112,8 @@ case class BatchWithPartitionData(
  */
 class BatchWithPartitionDataIterator(batchesWithPartitionData: Seq[BatchWithPartitionData])
   extends GpuColumnarBatchIterator(true) {
-  private val retryIter = withRetry(batchesWithPartitionData.toIterator,
+  private val batchIter = batchesWithPartitionData.toIterator
+  private val retryIter = withRetry(batchIter,
     BatchWithPartitionDataUtils.splitBatchInHalf) { attempt =>
     attempt.mergeWithPartitionData()
   }
@@ -125,7 +126,7 @@ class BatchWithPartitionDataIterator(batchesWithPartitionData: Seq[BatchWithPart
 
   override def doClose(): Unit = {
     // Close the batches that have not been iterated.
-    retryIter.foreach(_.close())
+    batchIter.foreach(_.close())
   }
 }
 
@@ -236,9 +237,9 @@ object BatchWithPartitionDataUtils {
     var partIndex = 0
     var splitOccurred = false
     var rowsInPartition = 0
+    var processNextPartition = true
     while (partIndex < partitionRowData.length) {
-      // If there was no split, get next partition else process remaining rows in current partition.
-      if (!splitOccurred) {
+      if (processNextPartition) {
         rowsInPartition = partitionRowData(partIndex).rowNum
       }
       val valuesInPartition = partitionRowData(partIndex).rowValue
@@ -259,6 +260,11 @@ object BatchWithPartitionDataUtils {
         currentBatch.append(PartitionRowData(valuesInPartition, rowsInPartition))
         val partitionSizes = calculatePartitionSizes(rowsInPartition, valuesInPartition, partSchema)
         sizeOfBatch.indices.foreach(i => sizeOfBatch(i) += partitionSizes(i))
+      }
+      // If there was no split or there are no rows to process, get next partition
+      // else process remaining rows in current partition.
+      processNextPartition = !splitOccurred || rowsInPartition == 0
+      if(processNextPartition) {
         // Process next partition
         partIndex += 1
       }
@@ -295,11 +301,15 @@ object BatchWithPartitionDataUtils {
       case (field, colIndex) if field.dataType == StringType
         && !values.isNullAt(colIndex) =>
         val sizeOfSingleValue = values.getUTF8String(colIndex).numBytes
-        val availableSpace = targetBatchSizeBytes - sizeOfBatch(colIndex)
-        // Calculated max row numbers that can fit.
-        val maxRows = (availableSpace / sizeOfSingleValue).toInt
-        // It should be capped at row numbers in the partition
-        Math.min(maxRows, rowNum)
+        if (sizeOfSingleValue == 0) {
+          // All rows can fit
+          rowNum
+        } else {
+          val availableSpace = targetBatchSizeBytes - sizeOfBatch(colIndex)
+          val maxRows = (availableSpace / sizeOfSingleValue).toInt
+          // Cap it at rowNum to ensure it doesn't exceed the available rows in the partition
+          Math.min(maxRows, rowNum)
+        }
       case _ => rowNum
     }.min
   }
