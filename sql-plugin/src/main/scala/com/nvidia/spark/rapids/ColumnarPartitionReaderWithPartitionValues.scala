@@ -32,7 +32,7 @@ class ColumnarPartitionReaderWithPartitionValues(
     fileReader: PartitionReader[ColumnarBatch],
     partitionValues: InternalRow,
     partitionSchema: StructType,
-    targetBatchSizeBytes: Long) extends PartitionReader[ColumnarBatch] {
+    maxGpuColumnSizeBytes: Long) extends PartitionReader[ColumnarBatch] {
   override def next(): Boolean = fileReader.next()
   private var outputIter: Iterator[ColumnarBatch] = Iterator.empty
 
@@ -45,7 +45,7 @@ class ColumnarPartitionReaderWithPartitionValues(
     } else {
       val fileBatch: ColumnarBatch = fileReader.get()
       outputIter = BatchWithPartitionDataUtils.addPartitionValuesToBatch(fileBatch,
-        Array(fileBatch.numRows), Array(partitionValues), partitionSchema, targetBatchSizeBytes)
+        Array(fileBatch.numRows), Array(partitionValues), partitionSchema, maxGpuColumnSizeBytes)
       outputIter.next()
     }
   }
@@ -59,8 +59,8 @@ object ColumnarPartitionReaderWithPartitionValues {
   def newReader(partFile: PartitionedFile,
       baseReader: PartitionReader[ColumnarBatch],
       partitionSchema: StructType,
-      targetBatchSizeBytes: Long): PartitionReader[ColumnarBatch] = {
+      maxGpuColumnSizeBytes: Long): PartitionReader[ColumnarBatch] = {
     new ColumnarPartitionReaderWithPartitionValues(baseReader, partFile.partitionValues,
-      partitionSchema, targetBatchSizeBytes)
+      partitionSchema, maxGpuColumnSizeBytes)
   }
 }

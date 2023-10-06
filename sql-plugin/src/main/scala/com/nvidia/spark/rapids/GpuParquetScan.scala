@@ -1197,8 +1197,8 @@ case class GpuParquetMultiFilePartitionReaderFactory(
     val combineConf = CombineConf(combineThresholdSize, combineWaitTime)
     new MultiFileCloudParquetPartitionReader(conf, files, filterFunc, isCaseSensitive,
       debugDumpPrefix, debugDumpAlways, maxReadBatchSizeRows, maxReadBatchSizeBytes,
-      targetBatchSizeBytes, useChunkedReader, metrics, partitionSchema, numThreads,
-      maxNumFileProcessed, ignoreMissingFiles, ignoreCorruptFiles, readUseFieldId,
+      targetBatchSizeBytes, maxGpuColumnSizeBytes, useChunkedReader, metrics, partitionSchema,
+      numThreads, maxNumFileProcessed, ignoreMissingFiles, ignoreCorruptFiles, readUseFieldId,
       alluxioPathReplacementMap.getOrElse(Map.empty), alluxioReplacementTaskTime,
       queryUsesInputFile, keepReadsInOrderFromConf, combineConf)
   }
@@ -1311,8 +1311,8 @@ case class GpuParquetMultiFilePartitionReaderFactory(
     }
     new MultiFileParquetPartitionReader(conf, files, clippedBlocks, isCaseSensitive,
       debugDumpPrefix, debugDumpAlways, useChunkedReader, maxReadBatchSizeRows,
-      maxReadBatchSizeBytes, targetBatchSizeBytes, metrics, partitionSchema, numThreads,
-      ignoreMissingFiles, ignoreCorruptFiles, readUseFieldId)
+      maxReadBatchSizeBytes, targetBatchSizeBytes, maxGpuColumnSizeBytes, metrics, partitionSchema,
+      numThreads, ignoreMissingFiles, ignoreCorruptFiles, readUseFieldId)
   }
 
   /**
@@ -1344,6 +1344,7 @@ case class GpuParquetPartitionReaderFactory(
   private val maxReadBatchSizeRows = rapidsConf.maxReadBatchSizeRows
   private val maxReadBatchSizeBytes = rapidsConf.maxReadBatchSizeBytes
   private val targetSizeBytes = rapidsConf.gpuTargetBatchSizeBytes
+  private val maxGpuColumnSizeBytes = rapidsConf.maxGpuColumnSizeBytes
   private val useChunkedReader = rapidsConf.chunkedReaderEnabled
   private val filterHandler = GpuParquetFileFilterHandler(sqlConf, metrics)
   private val readUseFieldId = ParquetSchemaClipShims.useFieldId(sqlConf)
@@ -1360,7 +1361,7 @@ case class GpuParquetPartitionReaderFactory(
       partitionedFile: PartitionedFile): PartitionReader[ColumnarBatch] = {
     val reader = new PartitionReaderWithBytesRead(buildBaseColumnarParquetReader(partitionedFile))
     ColumnarPartitionReaderWithPartitionValues.newReader(partitionedFile, reader, partitionSchema,
-      targetSizeBytes)
+      maxGpuColumnSizeBytes)
   }
 
   private def buildBaseColumnarParquetReader(
@@ -1902,6 +1903,7 @@ class MultiFileParquetPartitionReader(
     maxReadBatchSizeRows: Integer,
     maxReadBatchSizeBytes: Long,
     targetBatchSizeBytes: Long,
+    maxGpuColumnSizeBytes: Long,
     override val execMetrics: Map[String, GpuMetric],
     partitionSchema: StructType,
     numThreads: Int,
@@ -1909,7 +1911,7 @@ class MultiFileParquetPartitionReader(
     ignoreCorruptFiles: Boolean,
     useFieldId: Boolean)
   extends MultiFileCoalescingPartitionReaderBase(conf, clippedBlocks,
-    partitionSchema, maxReadBatchSizeRows, maxReadBatchSizeBytes, targetBatchSizeBytes,
+    partitionSchema, maxReadBatchSizeRows, maxReadBatchSizeBytes, maxGpuColumnSizeBytes,
     numThreads, execMetrics)
   with ParquetPartitionReaderBase {
 
@@ -2095,6 +2097,7 @@ class MultiFileCloudParquetPartitionReader(
     maxReadBatchSizeRows: Integer,
     maxReadBatchSizeBytes: Long,
     targetBatchSizeBytes: Long,
+    maxGpuColumnSizeBytes: Long,
     useChunkedReader: Boolean,
     override val execMetrics: Map[String, GpuMetric],
     partitionSchema: StructType,
@@ -2536,10 +2539,10 @@ class MultiFileCloudParquetPartitionReader(
         case Some(partRowsAndValues) =>
           val (rowsPerPart, partValues) = partRowsAndValues.unzip
           BatchWithPartitionDataUtils.addPartitionValuesToBatch(origBatch, rowsPerPart,
-            partValues, partitionSchema, targetBatchSizeBytes)
+            partValues, partitionSchema, maxGpuColumnSizeBytes)
         case None =>
           BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(origBatch,
-            meta.partitionedFile.partitionValues, partitionSchema, targetBatchSizeBytes)
+            meta.partitionedFile.partitionValues, partitionSchema, maxGpuColumnSizeBytes)
       }
 
     case buffer: HostMemoryBuffersWithMetaData =>
@@ -2602,7 +2605,7 @@ class MultiFileCloudParquetPartitionReader(
         val allPartInternalRows = allPartValues.get.map(_._2)
         val rowsPerPartition = allPartValues.get.map(_._1)
         new GpuColumnarBatchWithPartitionValuesIterator(batchIter, allPartInternalRows,
-          rowsPerPartition, partitionSchema, targetBatchSizeBytes)
+          rowsPerPartition, partitionSchema, maxGpuColumnSizeBytes)
       } else {
         // this is a bit weird, we don't have number of rows when allPartValues isn't
         // filled in so can't use GpuColumnarBatchWithPartitionValuesIterator
@@ -2610,7 +2613,7 @@ class MultiFileCloudParquetPartitionReader(
           // we have to add partition values here for this batch, we already verified that
           // its not different for all the blocks in this batch
           BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(batch,
-            partedFile.partitionValues, partitionSchema, targetBatchSizeBytes)
+            partedFile.partitionValues, partitionSchema, maxGpuColumnSizeBytes)
         }
       }
     }.flatten

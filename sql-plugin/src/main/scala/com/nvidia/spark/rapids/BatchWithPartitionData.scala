@@ -145,7 +145,7 @@ object BatchWithPartitionDataUtils {
    * @param partitionRows         Row numbers collected from the batch, and it should have
    *                              the same size with "partitionValues"
    * @param partitionSchema       Partition schema
-   * @param targetBatchSizeBytes  Target size of batch in bytes
+   * @param maxGpuColumnSizeBytes Maximum number of bytes for a GPU column
    * @return a new columnar batch iterator with partition values
    */
   def addPartitionValuesToBatch(
@@ -153,14 +153,14 @@ object BatchWithPartitionDataUtils {
       partitionRows: Array[Long],
       partitionValues: Array[InternalRow],
       partitionSchema: StructType,
-      targetBatchSizeBytes: Long): GpuColumnarBatchIterator = {
+      maxGpuColumnSizeBytes: Long): GpuColumnarBatchIterator = {
     if (partitionSchema.nonEmpty) {
       withResource(batch) { _ =>
         val partitionRowData = partitionValues.zip(partitionRows).map {
           case (rowValue, rowNum) => PartitionRowData(rowValue, rowNum.toInt)
         }
         val partitionedGroups = splitPartitionDataIntoGroups(partitionRowData, partitionSchema,
-          targetBatchSizeBytes)
+          maxGpuColumnSizeBytes)
         val splitBatches = splitAndCombineBatchWithPartitionData(batch, partitionedGroups,
           partitionSchema)
         new BatchWithPartitionDataIterator(splitBatches)
@@ -181,9 +181,9 @@ object BatchWithPartitionDataUtils {
       batch: ColumnarBatch,
       partitionValues: InternalRow,
       partitionSchema: StructType,
-      targetBatchSizeBytes: Long): GpuColumnarBatchIterator = {
+      maxGpuColumnSizeBytes: Long): GpuColumnarBatchIterator = {
     addPartitionValuesToBatch(batch, Array(batch.numRows), Array(partitionValues), partitionSchema,
-      targetBatchSizeBytes)
+      maxGpuColumnSizeBytes)
   }
 
   /**
@@ -230,7 +230,7 @@ object BatchWithPartitionDataUtils {
   private def splitPartitionDataIntoGroups(
       partitionRowData: Array[PartitionRowData],
       partSchema: StructType,
-      targetBatchSizeBytes: Long): Array[Array[PartitionRowData]] = {
+      maxGpuColumnSizeBytes: Long): Array[Array[PartitionRowData]] = {
     val resultBatches = ArrayBuffer[Array[PartitionRowData]]()
     val currentBatch = ArrayBuffer[PartitionRowData]()
     val sizeOfBatch = Array.fill(partSchema.length)(0L)
@@ -246,7 +246,7 @@ object BatchWithPartitionDataUtils {
       // Calculate the maximum number of rows that can fit in current batch.
       val maxRows = calculateMaxRows(rowsInPartition, valuesInPartition, partSchema,
         sizeOfBatch,
-        targetBatchSizeBytes)
+        maxGpuColumnSizeBytes)
       // Splitting occurs if for any column, maximum rows we can fit is less than rows in partition.
       splitOccurred = maxRows < rowsInPartition
       if (splitOccurred) {
@@ -296,7 +296,7 @@ object BatchWithPartitionDataUtils {
    * This value is capped at row numbers in the partition.
    */
   private def calculateMaxRows(rowNum: Int, values: InternalRow, partSchema: StructType,
-      sizeOfBatch: Array[Long], targetBatchSizeBytes: Long): Int = {
+      sizeOfBatch: Array[Long], maxGpuColumnSizeBytes: Long): Int = {
     partSchema.zipWithIndex.map {
       case (field, colIndex) if field.dataType == StringType
         && !values.isNullAt(colIndex) =>
@@ -305,7 +305,7 @@ object BatchWithPartitionDataUtils {
           // All rows can fit
           rowNum
         } else {
-          val availableSpace = targetBatchSizeBytes - sizeOfBatch(colIndex)
+          val availableSpace = maxGpuColumnSizeBytes - sizeOfBatch(colIndex)
           val maxRows = (availableSpace / sizeOfSingleValue).toInt
           // Cap it at rowNum to ensure it doesn't exceed the available rows in the partition
           Math.min(maxRows, rowNum)

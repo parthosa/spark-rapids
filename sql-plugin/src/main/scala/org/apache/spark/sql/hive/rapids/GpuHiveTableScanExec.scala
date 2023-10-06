@@ -209,7 +209,7 @@ case class GpuHiveTableScanExec(requestedAttributes: Seq[Attribute],
       requestedAttributes = requestedAttributes,
       maxReaderBatchSizeRows = rapidsConf.maxReadBatchSizeRows,
       maxReaderBatchSizeBytes = rapidsConf.maxReadBatchSizeBytes,
-      targetBatchSizeBytes = rapidsConf.gpuTargetBatchSizeBytes,
+      maxGpuColumnSizeBytes = rapidsConf.maxGpuColumnSizeBytes,
       metrics = allMetrics,
       params = options
     )
@@ -395,12 +395,12 @@ case class GpuHiveTableScanExec(requestedAttributes: Seq[Attribute],
 class AlphabeticallyReorderingColumnPartitionReader(fileReader: PartitionReader[ColumnarBatch],
                                                     partitionValues: InternalRow,
                                                     partitionSchema: StructType,
-                                                    targetBatchSizeBytes: Long,
+                                                    maxGpuColumnSizeBytes: Long,
                                                     requestedAttributes: Seq[Attribute])
   extends ColumnarPartitionReaderWithPartitionValues(fileReader,
                                                      partitionValues,
                                                      partitionSchema,
-                                                     targetBatchSizeBytes) {
+                                                     maxGpuColumnSizeBytes) {
   override def get(): ColumnarBatch = {
     val fileBatch: ColumnarBatch = super.get()
     if (partitionSchema.isEmpty) {
@@ -413,7 +413,7 @@ class AlphabeticallyReorderingColumnPartitionReader(fileReader: PartitionReader[
     // in the output projection. Must discard unused partition keys here.
     withResource(fileBatch) { fileBatch =>
       var dataColumnIndex = 0
-      val partitionColumnStartIndex = fileBatch.numCols() - partitionSchema.length
+      val partitionColumnStartIndex = fileBatch.numCols() - partitionValues.numFields
       val partitionKeys = partitionSchema.map(_.name).toList
       val reorderedColumns = requestedAttributes.map { a =>
         val partIndex = partitionKeys.indexOf(a.name)
@@ -442,7 +442,7 @@ case class GpuHiveTextPartitionReaderFactory(sqlConf: SQLConf,
                                              requestedAttributes: Seq[Attribute],
                                              maxReaderBatchSizeRows: Integer,
                                              maxReaderBatchSizeBytes: Long,
-                                             targetBatchSizeBytes: Long,
+                                             maxGpuColumnSizeBytes: Long,
                                              metrics: Map[String, GpuMetric],
                                              params: Map[String, String])
   extends ShimFilePartitionReaderFactory(params) {
@@ -466,7 +466,7 @@ case class GpuHiveTextPartitionReaderFactory(sqlConf: SQLConf,
     new AlphabeticallyReorderingColumnPartitionReader(reader,
                                                       partFile.partitionValues,
                                                       partitionSchema,
-                                                      targetBatchSizeBytes,
+                                                      maxGpuColumnSizeBytes,
                                                       requestedAttributes)
   }
 }

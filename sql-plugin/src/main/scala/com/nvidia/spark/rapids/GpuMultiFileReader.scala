@@ -215,6 +215,7 @@ abstract class MultiFilePartitionReaderFactoryBase(
   protected val maxReadBatchSizeRows: Int = rapidsConf.maxReadBatchSizeRows
   protected val maxReadBatchSizeBytes: Long = rapidsConf.maxReadBatchSizeBytes
   protected val targetBatchSizeBytes: Long = rapidsConf.gpuTargetBatchSizeBytes
+  protected val maxGpuColumnSizeBytes: Long = rapidsConf.maxGpuColumnSizeBytes
   private val allCloudSchemes = rapidsConf.getCloudSchemes.toSet
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
@@ -822,7 +823,7 @@ class BatchContext(
  * @param partitionSchema       schema of partitions
  * @param maxReadBatchSizeRows  soft limit on the maximum number of rows the reader reads per batch
  * @param maxReadBatchSizeBytes soft limit on the maximum number of bytes the reader reads per batch
- * @param targetBatchSizeBytes target number of bytes for a GPU batch
+ * @param maxGpuColumnSizeBytes maximum number of bytes for a GPU column
  * @param numThreads            the size of the threadpool
  * @param execMetrics           metrics
  */
@@ -832,7 +833,7 @@ abstract class MultiFileCoalescingPartitionReaderBase(
     partitionSchema: StructType,
     maxReadBatchSizeRows: Integer,
     maxReadBatchSizeBytes: Long,
-    targetBatchSizeBytes: Long,
+    maxGpuColumnSizeBytes: Long,
     numThreads: Int,
     execMetrics: Map[String, GpuMetric]) extends FilePartitionReaderBase(conf, execMetrics)
     with MultiFileReaderFunctions {
@@ -1078,7 +1079,7 @@ abstract class MultiFileCoalescingPartitionReaderBase(
       }
       new GpuColumnarBatchWithPartitionValuesIterator(batchIter, currentChunkMeta.allPartValues,
         currentChunkMeta.rowsPerPartition, partitionSchema,
-        targetBatchSizeBytes).map { withParts =>
+        maxGpuColumnSizeBytes).map { withParts =>
         withResource(withParts) { _ =>
           finalizeOutputBatch(withParts, currentChunkMeta.extraInfo)
         }

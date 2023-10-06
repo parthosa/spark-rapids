@@ -63,5 +63,5 @@ class RapidsCsvScanMeta(
       cScan.dataFilters,
       conf.maxReadBatchSizeRows,
       conf.maxReadBatchSizeBytes,
-      conf.gpuTargetBatchSizeBytes)
+      conf.maxGpuColumnSizeBytes)
 }
