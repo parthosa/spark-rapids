@@ -55,7 +55,7 @@ def extract_partition_cols(gen_list):
 @inject_oom
 @pytest.mark.parametrize("key", gen_list_dict.keys())
 def test_col_size_exceeding_cudf_limit(spark_tmp_path, key):
-    conf = {'spark.rapids.cudfColumnSizeLimit': 1000}
+    conf = {'spark.rapids.sql.batchSizeBytes': 1000}
     gen_list = gen_list_dict[key]
     partition_cols = extract_partition_cols(gen_list)
     gen = StructGen(gen_list, nullable=False)
