@@ -562,9 +562,9 @@ case class GpuOrcMultiFilePartitionReaderFactory(
       PartitionReader[ColumnarBatch] = {
     val combineConf = CombineConf(combineThresholdSize, combineWaitTime)
     new MultiFileCloudOrcPartitionReader(conf, files, dataSchema, readDataSchema, partitionSchema,
-      maxReadBatchSizeRows, maxReadBatchSizeBytes, numThreads, maxNumFileProcessed,
-      debugDumpPrefix, debugDumpAlways, filters, filterHandler, metrics, ignoreMissingFiles,
-      ignoreCorruptFiles, queryUsesInputFile, keepReadsInOrder, combineConf)
+      maxReadBatchSizeRows, maxReadBatchSizeBytes, targetBatchSizeBytes, numThreads,
+      maxNumFileProcessed, debugDumpPrefix, debugDumpAlways, filters, filterHandler, metrics,
+      ignoreMissingFiles, ignoreCorruptFiles, queryUsesInputFile, keepReadsInOrder, combineConf)
   }
 
   /**
@@ -604,8 +604,8 @@ case class GpuOrcMultiFilePartitionReaderFactory(
     }
     val clippedStripes = compressionAndStripes.values.flatten.toSeq
     new MultiFileOrcPartitionReader(conf, files, clippedStripes, readDataSchema,
-      debugDumpPrefix, debugDumpAlways, maxReadBatchSizeRows, maxReadBatchSizeBytes, metrics,
-      partitionSchema, numThreads, filterHandler.isCaseSensitive)
+      debugDumpPrefix, debugDumpAlways, maxReadBatchSizeRows, maxReadBatchSizeBytes,
+      targetBatchSizeBytes, metrics, partitionSchema, numThreads, filterHandler.isCaseSensitive)
   }
 
   /**
@@ -634,6 +634,7 @@ case class GpuOrcPartitionReaderFactory(
   private val debugDumpAlways = rapidsConf.orcDebugDumpAlways
   private val maxReadBatchSizeRows: Integer = rapidsConf.maxReadBatchSizeRows
   private val maxReadBatchSizeBytes: Long = rapidsConf.maxReadBatchSizeBytes
+  private val targetBatchSizeBytes: Long = rapidsConf.gpuTargetBatchSizeBytes
   private val filterHandler = GpuOrcFileFilterHandler(sqlConf, metrics, broadcastedConf,
     pushedFilters, rapidsConf.isOrcFloatTypesToStringEnable)
 
@@ -658,7 +659,8 @@ case class GpuOrcPartitionReaderFactory(
       val reader = new PartitionReaderWithBytesRead(new GpuOrcPartitionReader(conf, partFile, ctx,
         readDataSchema, debugDumpPrefix, debugDumpAlways,  maxReadBatchSizeRows,
         maxReadBatchSizeBytes, metrics, filterHandler.isCaseSensitive))
-      ColumnarPartitionReaderWithPartitionValues.newReader(partFile, reader, partitionSchema)
+      ColumnarPartitionReaderWithPartitionValues.newReader(partFile, reader, partitionSchema,
+        targetBatchSizeBytes)
     }
   }
 }
@@ -1949,6 +1951,7 @@ private object GpuOrcFileFilterHandler {
  * @param partitionSchema Schema of partitions.
  * @param maxReadBatchSizeRows soft limit on the maximum number of rows the reader reads per batch
  * @param maxReadBatchSizeBytes soft limit on the maximum number of bytes the reader reads per batch
+ * @param targetBatchSizeBytes target number of bytes for a GPU batch
  * @param numThreads the size of the threadpool
  * @param maxNumFileProcessed threshold to control the maximum file number to be
  *                            submitted to threadpool
@@ -1968,6 +1971,7 @@ class MultiFileCloudOrcPartitionReader(
     partitionSchema: StructType,
     maxReadBatchSizeRows: Integer,
     maxReadBatchSizeBytes: Long,
+    targetBatchSizeBytes: Long,
     numThreads: Int,
     maxNumFileProcessed: Int,
     override val debugDumpPrefix: Option[String],
@@ -2179,10 +2183,10 @@ class MultiFileCloudOrcPartitionReader(
           case Some(partRowsAndValues) =>
             val (rowsPerPart, partValues) = partRowsAndValues.unzip
             BatchWithPartitionDataUtils.addPartitionValuesToBatch(batch, rowsPerPart,
-              partValues, partitionSchema)
+              partValues, partitionSchema, targetBatchSizeBytes)
           case None =>
             BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(batch,
-              meta.partitionedFile.partitionValues, partitionSchema)
+              meta.partitionedFile.partitionValues, partitionSchema, targetBatchSizeBytes)
         }
 
       case buffer: HostMemoryBuffersWithMetaData =>
@@ -2195,10 +2199,10 @@ class MultiFileCloudOrcPartitionReader(
               case Some(partRowsAndValues) =>
                 val (rowsPerPart, partValues) = partRowsAndValues.unzip
                 BatchWithPartitionDataUtils.addPartitionValuesToBatch(batch, rowsPerPart,
-                  partValues, partitionSchema)
+                  partValues, partitionSchema, targetBatchSizeBytes)
               case None =>
                 BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(batch,
-                  buffer.partitionedFile.partitionValues, partitionSchema)
+                  buffer.partitionedFile.partitionValues, partitionSchema, targetBatchSizeBytes)
             }
           case _ =>
             EmptyGpuColumnarBatchIterator
@@ -2491,6 +2495,7 @@ private case class OrcSingleStripeMeta(
  * @param debugDumpAlways       whether to always debug dump or only on errors
  * @param maxReadBatchSizeRows  soft limit on the maximum number of rows the reader reads per batch
  * @param maxReadBatchSizeBytes soft limit on the maximum number of bytes the reader reads per batch
+ * @param targetBatchSizeBytes target number of bytes for a GPU batch
  * @param execMetrics           metrics
  * @param partitionSchema       schema of partitions
  * @param numThreads            the size of the threadpool
@@ -2505,12 +2510,14 @@ class MultiFileOrcPartitionReader(
     override val debugDumpAlways: Boolean,
     maxReadBatchSizeRows: Integer,
     maxReadBatchSizeBytes: Long,
+    targetBatchSizeBytes: Long,
     execMetrics: Map[String, GpuMetric],
     partitionSchema: StructType,
     numThreads: Int,
     isCaseSensitive: Boolean)
   extends MultiFileCoalescingPartitionReaderBase(conf, clippedStripes,
-    partitionSchema, maxReadBatchSizeRows, maxReadBatchSizeBytes, numThreads, execMetrics)
+    partitionSchema, maxReadBatchSizeRows, maxReadBatchSizeBytes, targetBatchSizeBytes,
+    numThreads, execMetrics)
     with OrcCommonFunctions {
 
   // implicit to convert SchemaBase to Orc TypeDescription

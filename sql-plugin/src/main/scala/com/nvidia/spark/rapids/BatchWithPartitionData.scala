@@ -25,7 +25,6 @@ import com.nvidia.spark.rapids.RmmRapidsRetryIterator.withRetry
 import com.nvidia.spark.rapids.jni.SplitAndRetryOOM
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -133,31 +132,34 @@ class BatchWithPartitionDataIterator(batchesWithPartitionData: Seq[BatchWithPart
 object BatchWithPartitionDataUtils {
   /**
    * Splits partition data (values and row counts) into smaller batches, ensuring that
-   * size of batch is less than cuDF size limit. Then, it utilizes these smaller
+   * size of batch is less than target batch size. Then, it utilizes these smaller
    * partitioned batches to split the input batch and merges them to generate
    * an Iterator of split ColumnarBatches.
    *
    * Using an Iterator ensures that the actual merging does not happen until
    * the batch is required, thus avoiding GPU memory wastage.
    *
-   * @param batch           Input batch, will be closed after the call returns
-   * @param partitionValues Partition values collected from the batch
-   * @param partitionRows   Row numbers collected from the batch, and it should have
-   *                        the same size with "partitionValues"
-   * @param partitionSchema Partition schema
+   * @param batch                 Input batch, will be closed after the call returns
+   * @param partitionValues       Partition values collected from the batch
+   * @param partitionRows         Row numbers collected from the batch, and it should have
+   *                              the same size with "partitionValues"
+   * @param partitionSchema       Partition schema
+   * @param targetBatchSizeBytes  Target size of batch in bytes
    * @return a new columnar batch iterator with partition values
    */
   def addPartitionValuesToBatch(
       batch: ColumnarBatch,
       partitionRows: Array[Long],
       partitionValues: Array[InternalRow],
-      partitionSchema: StructType): GpuColumnarBatchIterator = {
+      partitionSchema: StructType,
+      targetBatchSizeBytes: Long): GpuColumnarBatchIterator = {
     if (partitionSchema.nonEmpty) {
       withResource(batch) { _ =>
         val partitionRowData = partitionValues.zip(partitionRows).map {
           case (rowValue, rowNum) => PartitionRowData(rowValue, rowNum.toInt)
         }
-        val partitionedGroups = splitPartitionDataIntoGroups(partitionRowData, partitionSchema)
+        val partitionedGroups = splitPartitionDataIntoGroups(partitionRowData, partitionSchema,
+          targetBatchSizeBytes)
         val splitBatches = splitAndCombineBatchWithPartitionData(batch, partitionedGroups,
           partitionSchema)
         new BatchWithPartitionDataIterator(splitBatches)
@@ -168,19 +170,24 @@ object BatchWithPartitionDataUtils {
   }
 
   /**
-   * Adds a single set of partition values to all rows in a ColumnarBatch.
+   * Adds a single set of partition values to all rows in a ColumnarBatch ensuring that
+   * size of batch is less than target batch size.
+   *
    * @return a new columnar batch iterator with partition values
+   * @see [[com.nvidia.spark.rapids.BatchWithPartitionDataUtils.addPartitionValuesToBatch]]
    */
   def addSinglePartitionValueToBatch(
       batch: ColumnarBatch,
       partitionValues: InternalRow,
-      partitionSchema: StructType): GpuColumnarBatchIterator = {
-    addPartitionValuesToBatch(batch, Array(batch.numRows), Array(partitionValues), partitionSchema)
+      partitionSchema: StructType,
+      targetBatchSizeBytes: Long): GpuColumnarBatchIterator = {
+    addPartitionValuesToBatch(batch, Array(batch.numRows), Array(partitionValues), partitionSchema,
+      targetBatchSizeBytes)
   }
 
   /**
    * Splits partitions into smaller batches, ensuring that the batch size
-   * for each column does not exceed the maximum column size limit.
+   * for each column does not exceed the maximum batch size limit.
    *
    * Data structures:
    *  - sizeOfBatch:   Array that stores the size of batches for each column.
@@ -221,8 +228,8 @@ object BatchWithPartitionDataUtils {
    */
   private def splitPartitionDataIntoGroups(
       partitionRowData: Array[PartitionRowData],
-      partSchema: StructType): Array[Array[PartitionRowData]] = {
-    val maxColumnSize = getMaxColumnSize
+      partSchema: StructType,
+      targetBatchSizeBytes: Long): Array[Array[PartitionRowData]] = {
     val resultBatches = ArrayBuffer[Array[PartitionRowData]]()
     val currentBatch = ArrayBuffer[PartitionRowData]()
     val sizeOfBatch = Array.fill(partSchema.length)(0L)
@@ -237,7 +244,8 @@ object BatchWithPartitionDataUtils {
         rowsInPartition = currentPartition.rowNum
       }
       // Calculate the maximum number of rows that can fit in current batch.
-      val maxRows = calculateMaxRows(currentPartition, partSchema, sizeOfBatch, maxColumnSize)
+      val maxRows = calculateMaxRows(currentPartition, partSchema, sizeOfBatch,
+        targetBatchSizeBytes)
       // Splitting occurs if for any column, maximum rows we can fit is less than rows in partition.
       splitOccurred = maxRows < rowsInPartition
       if (splitOccurred) {
@@ -264,13 +272,6 @@ object BatchWithPartitionDataUtils {
   }
 
   /**
-   * Retrieves the maximum size for cuDF column vector from the configuration.
-   */
-  private def getMaxColumnSize: Long = {
-    new RapidsConf(SQLConf.get).cudfColumnSizeLimit
-  }
-
-  /**
    * Calculates the partition size for each column as 'size of single value * number of rows'
    */
   private def calculatePartitionSizes(partitionRowData: PartitionRowData,
@@ -289,12 +290,12 @@ object BatchWithPartitionDataUtils {
    * Calculate the maximum number of rows that can fit into a batch without exceeding limit.
    */
   private def calculateMaxRows(partitionRowData: PartitionRowData, partSchema: StructType,
-      sizeOfBatch: Array[Long], maxColumnSize: Long): Int = {
+      sizeOfBatch: Array[Long], targetBatchSizeBytes: Long): Int = {
     partSchema.zipWithIndex.map {
       case (field, colIndex) if !partitionRowData.rowValue.isNullAt(colIndex)
         && field.dataType == StringType =>
         val sizeOfSingleValue = partitionRowData.rowValue.getUTF8String(colIndex).numBytes
-        val availableSpace = maxColumnSize - sizeOfBatch(colIndex)
+        val availableSpace = targetBatchSizeBytes - sizeOfBatch(colIndex)
         // Calculated max row numbers that can fit.
         val maxRows = (availableSpace / sizeOfSingleValue).toInt
         maxRows

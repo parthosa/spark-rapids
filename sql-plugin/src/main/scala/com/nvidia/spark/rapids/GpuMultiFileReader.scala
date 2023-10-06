@@ -822,6 +822,7 @@ class BatchContext(
  * @param partitionSchema       schema of partitions
  * @param maxReadBatchSizeRows  soft limit on the maximum number of rows the reader reads per batch
  * @param maxReadBatchSizeBytes soft limit on the maximum number of bytes the reader reads per batch
+ * @param targetBatchSizeBytes target number of bytes for a GPU batch
  * @param numThreads            the size of the threadpool
  * @param execMetrics           metrics
  */
@@ -831,6 +832,7 @@ abstract class MultiFileCoalescingPartitionReaderBase(
     partitionSchema: StructType,
     maxReadBatchSizeRows: Integer,
     maxReadBatchSizeBytes: Long,
+    targetBatchSizeBytes: Long,
     numThreads: Int,
     execMetrics: Map[String, GpuMetric]) extends FilePartitionReaderBase(conf, execMetrics)
     with MultiFileReaderFunctions {
@@ -1075,7 +1077,8 @@ abstract class MultiFileCoalescingPartitionReaderBase(
         }
       }
       new GpuColumnarBatchWithPartitionValuesIterator(batchIter, currentChunkMeta.allPartValues,
-          currentChunkMeta.rowsPerPartition, partitionSchema).map { withParts =>
+        currentChunkMeta.rowsPerPartition, partitionSchema,
+        targetBatchSizeBytes).map { withParts =>
         withResource(withParts) { _ =>
           finalizeOutputBatch(withParts, currentChunkMeta.extraInfo)
         }

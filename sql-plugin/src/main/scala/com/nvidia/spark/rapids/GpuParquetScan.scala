@@ -1359,7 +1359,8 @@ case class GpuParquetPartitionReaderFactory(
   override def buildColumnarReader(
       partitionedFile: PartitionedFile): PartitionReader[ColumnarBatch] = {
     val reader = new PartitionReaderWithBytesRead(buildBaseColumnarParquetReader(partitionedFile))
-    ColumnarPartitionReaderWithPartitionValues.newReader(partitionedFile, reader, partitionSchema)
+    ColumnarPartitionReaderWithPartitionValues.newReader(partitionedFile, reader, partitionSchema,
+      targetSizeBytes)
   }
 
   private def buildBaseColumnarParquetReader(
@@ -1908,7 +1909,8 @@ class MultiFileParquetPartitionReader(
     ignoreCorruptFiles: Boolean,
     useFieldId: Boolean)
   extends MultiFileCoalescingPartitionReaderBase(conf, clippedBlocks,
-    partitionSchema, maxReadBatchSizeRows, maxReadBatchSizeBytes, numThreads, execMetrics)
+    partitionSchema, maxReadBatchSizeRows, maxReadBatchSizeBytes, targetBatchSizeBytes,
+    numThreads, execMetrics)
   with ParquetPartitionReaderBase {
 
   // Some implicits to convert the base class to the sub-class and vice versa
@@ -2534,10 +2536,10 @@ class MultiFileCloudParquetPartitionReader(
         case Some(partRowsAndValues) =>
           val (rowsPerPart, partValues) = partRowsAndValues.unzip
           BatchWithPartitionDataUtils.addPartitionValuesToBatch(origBatch, rowsPerPart,
-            partValues, partitionSchema)
+            partValues, partitionSchema, targetBatchSizeBytes)
         case None =>
           BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(origBatch,
-            meta.partitionedFile.partitionValues, partitionSchema)
+            meta.partitionedFile.partitionValues, partitionSchema, targetBatchSizeBytes)
       }
 
     case buffer: HostMemoryBuffersWithMetaData =>
@@ -2600,7 +2602,7 @@ class MultiFileCloudParquetPartitionReader(
         val allPartInternalRows = allPartValues.get.map(_._2)
         val rowsPerPartition = allPartValues.get.map(_._1)
         new GpuColumnarBatchWithPartitionValuesIterator(batchIter, allPartInternalRows,
-          rowsPerPartition, partitionSchema)
+          rowsPerPartition, partitionSchema, targetBatchSizeBytes)
       } else {
         // this is a bit weird, we don't have number of rows when allPartValues isn't
         // filled in so can't use GpuColumnarBatchWithPartitionValuesIterator
@@ -2608,7 +2610,7 @@ class MultiFileCloudParquetPartitionReader(
           // we have to add partition values here for this batch, we already verified that
           // its not different for all the blocks in this batch
           BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(batch,
-            partedFile.partitionValues, partitionSchema)
+            partedFile.partitionValues, partitionSchema, targetBatchSizeBytes)
         }
       }
     }.flatten

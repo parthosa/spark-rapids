@@ -31,7 +31,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 class ColumnarPartitionReaderWithPartitionValues(
     fileReader: PartitionReader[ColumnarBatch],
     partitionValues: InternalRow,
-    partitionSchema: StructType) extends PartitionReader[ColumnarBatch] {
+    partitionSchema: StructType,
+    targetBatchSizeBytes: Long) extends PartitionReader[ColumnarBatch] {
   override def next(): Boolean = fileReader.next()
   private var outputIter: Iterator[ColumnarBatch] = Iterator.empty
 
@@ -44,7 +45,7 @@ class ColumnarPartitionReaderWithPartitionValues(
     } else {
       val fileBatch: ColumnarBatch = fileReader.get()
       outputIter = BatchWithPartitionDataUtils.addPartitionValuesToBatch(fileBatch,
-        Array(fileBatch.numRows), Array(partitionValues), partitionSchema)
+        Array(fileBatch.numRows), Array(partitionValues), partitionSchema, targetBatchSizeBytes)
       outputIter.next()
     }
   }
@@ -57,8 +58,9 @@ class ColumnarPartitionReaderWithPartitionValues(
 object ColumnarPartitionReaderWithPartitionValues {
   def newReader(partFile: PartitionedFile,
       baseReader: PartitionReader[ColumnarBatch],
-      partitionSchema: StructType): PartitionReader[ColumnarBatch] = {
+      partitionSchema: StructType,
+      targetBatchSizeBytes: Long): PartitionReader[ColumnarBatch] = {
     new ColumnarPartitionReaderWithPartitionValues(baseReader, partFile.partitionValues,
-      partitionSchema)
+      partitionSchema, targetBatchSizeBytes)
   }
 }
