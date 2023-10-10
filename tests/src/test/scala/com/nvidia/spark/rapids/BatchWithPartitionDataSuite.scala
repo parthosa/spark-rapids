@@ -16,7 +16,6 @@
 
 package com.nvidia.spark.rapids
 
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 
@@ -37,29 +36,22 @@ class BatchWithPartitionDataSuite extends SparkQueryCompareTestSuite {
   }
 
   test("test splitting partition data into groups") {
-    val conf = new SparkConf(false)
-      .set(RapidsConf.CUDF_COLUMN_SIZE_LIMIT.key, "1000")
-    withCpuSparkSession(_ => {
-      val (rowValues, rowNums, schema) = generateRowData()
-      val partitionRowData = PartitionRowData.from(rowValues, rowNums)
-      val resultPartitions = BatchWithPartitionDataUtils.splitPartitionDataIntoGroups(
-        partitionRowData, schema)
-      val resultRowCounts = resultPartitions.flatMap(_.map(_.rowNum)).sum
-      val expectedRowCounts = partitionRowData.map(_.rowNum).sum
-      assert(resultRowCounts == expectedRowCounts)
-    }, conf)
+    val maxGpuColumnSizeBytes = 1000
+    val (rowValues, rowNums, schema) = generateRowData()
+    val partitionRowData = PartitionRowData.from(rowValues, rowNums)
+    val resultPartitions = BatchWithPartitionDataUtils.splitPartitionDataIntoGroups(
+      partitionRowData, schema, maxGpuColumnSizeBytes)
+    val resultRowCounts = resultPartitions.flatMap(_.map(_.rowNum)).sum
+    val expectedRowCounts = partitionRowData.map(_.rowNum).sum
+    assert(resultRowCounts == expectedRowCounts)
   }
 
   test("test splitting partition data into halves") {
-    val conf = new SparkConf(false)
-      .set(RapidsConf.CUDF_COLUMN_SIZE_LIMIT.key, "1000")
-    withCpuSparkSession(_ => {
-      val (rowValues, rowNums, _) = generateRowData()
-      val partitionRowData = PartitionRowData.from(rowValues, rowNums)
-      val resultPartitions = BatchWithPartitionDataUtils.splitPartitionDataInHalf(partitionRowData)
-      val resultRowCounts = resultPartitions.flatMap(_.map(_.rowNum)).sum
-      val expectedRowCounts = partitionRowData.map(_.rowNum).sum
-      assert(resultRowCounts == expectedRowCounts)
-    }, conf)
+    val (rowValues, rowNums, _) = generateRowData()
+    val partitionRowData = PartitionRowData.from(rowValues, rowNums)
+    val resultPartitions = BatchWithPartitionDataUtils.splitPartitionDataInHalf(partitionRowData)
+    val resultRowCounts = resultPartitions.flatMap(_.map(_.rowNum)).sum
+    val expectedRowCounts = partitionRowData.map(_.rowNum).sum
+    assert(resultRowCounts == expectedRowCounts)
   }
 }
