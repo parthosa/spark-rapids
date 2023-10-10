@@ -43,7 +43,9 @@ object PartitionRowData {
 
   def from(rowValues: Array[InternalRow], rowNums: Array[Long]): Array[PartitionRowData] = {
     rowValues.zip(rowNums).map {
-      case (rowValue, rowNum) => PartitionRowData(rowValue, rowNum.toInt)
+      case (rowValue, rowNum) =>
+        require(rowNum <= Integer.MAX_VALUE, s"Row number $rowNum exceeds max value of an integer.")
+        PartitionRowData(rowValue, rowNum.toInt)
     }
   }
 }
@@ -170,6 +172,8 @@ object BatchWithPartitionDataUtils {
       maxGpuColumnSizeBytes: Long): GpuColumnarBatchIterator = {
     if (partitionSchema.nonEmpty) {
       withResource(batch) { _ =>
+        require(partitionRows.length == partitionValues.length, "Partition rows and values must" +
+          " be of same length")
         val partitionRowData = PartitionRowData.from(partitionValues, partitionRows)
         val partitionedGroups = splitPartitionDataIntoGroups(partitionRowData, partitionSchema,
           maxGpuColumnSizeBytes)
