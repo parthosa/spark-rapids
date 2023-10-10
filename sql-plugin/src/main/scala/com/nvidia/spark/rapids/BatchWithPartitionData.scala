@@ -34,6 +34,20 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  */
 case class PartitionRowData(rowValue: InternalRow, rowNum: Int)
 
+object PartitionRowData {
+  def from(rowValues: Array[InternalRow], rowNums: Array[Int]): Array[PartitionRowData] = {
+    rowValues.zip(rowNums).map {
+      case (rowValue, rowNum) => PartitionRowData(rowValue, rowNum)
+    }
+  }
+
+  def from(rowValues: Array[InternalRow], rowNums: Array[Long]): Array[PartitionRowData] = {
+    rowValues.zip(rowNums).map {
+      case (rowValue, rowNum) => PartitionRowData(rowValue, rowNum.toInt)
+    }
+  }
+}
+
 /**
  * Class to wrap columnar batch and partition rows data and utility functions to merge them.
  *
@@ -156,9 +170,7 @@ object BatchWithPartitionDataUtils {
       maxGpuColumnSizeBytes: Long): GpuColumnarBatchIterator = {
     if (partitionSchema.nonEmpty) {
       withResource(batch) { _ =>
-        val partitionRowData = partitionValues.zip(partitionRows).map {
-          case (rowValue, rowNum) => PartitionRowData(rowValue, rowNum.toInt)
-        }
+        val partitionRowData = PartitionRowData.from(partitionValues, partitionRows)
         val partitionedGroups = splitPartitionDataIntoGroups(partitionRowData, partitionSchema,
           maxGpuColumnSizeBytes)
         val splitBatches = splitAndCombineBatchWithPartitionData(batch, partitionedGroups,
@@ -227,7 +239,7 @@ object BatchWithPartitionDataUtils {
    * @return An array of batches, containing (row counts, partition values) pairs,
    *         such that each batch's size is less than column size limit.
    */
-  private def splitPartitionDataIntoGroups(
+  def splitPartitionDataIntoGroups(
       partitionRowData: Array[PartitionRowData],
       partSchema: StructType,
       maxGpuColumnSizeBytes: Long): Array[Array[PartitionRowData]] = {
@@ -340,11 +352,10 @@ object BatchWithPartitionDataUtils {
       assert(totalRowsInSplitBatches == batch.numRows())
       assert(splitColumnarBatches.length == listOfPartitionedRowsData.length)
       // Combine the split GPU ColumnVectors with partition ColumnVectors.
-      val combinedBatches = splitColumnarBatches.zip(listOfPartitionedRowsData).map {
+      splitColumnarBatches.zip(listOfPartitionedRowsData).map {
         case (spillableBatch, partitionedRowsData) =>
           BatchWithPartitionData(spillableBatch, partitionedRowsData, partitionSchema)
       }
-      combinedBatches
     }
   }
 
@@ -435,32 +446,37 @@ object BatchWithPartitionDataUtils {
    * @note This function ensures that splitting is possible even in cases where there is a single
    * large partition until there is only one row.
    */
-  private def splitPartitionDataInHalf(
+  def splitPartitionDataInHalf(
       partitionedRowsData: Array[PartitionRowData]): Array[Array[PartitionRowData]] = {
     val totalRows = partitionedRowsData.map(_.rowNum).sum
     if (totalRows <= 1) {
-      throw new SplitAndRetryOOM("GPU OutOfMemory: cannot not split input with one row")
+      // cannot split input with one row
+      Array(partitionedRowsData)
     }
     var remainingRows = totalRows / 2
+    var rowsAddedToLeft = 0
+    var rowsAddedToRight = 0
     val leftHalf = ArrayBuffer[PartitionRowData]()
     val rightHalf = ArrayBuffer[PartitionRowData]()
     partitionedRowsData.foreach { partitionRow: PartitionRowData =>
       if (remainingRows > 0) {
-        // Determine how many rows to add to the left partition
+        // Add rows to the left partition, up to the remaining rows available
         val rowsToAddToLeft = Math.min(partitionRow.rowNum, remainingRows)
-        leftHalf.append(PartitionRowData(partitionRow.rowValue, rowsToAddToLeft))
+        leftHalf += partitionRow.copy(rowNum = rowsToAddToLeft)
+        rowsAddedToLeft += rowsToAddToLeft
         remainingRows -= rowsToAddToLeft
         if (remainingRows <= 0) {
           // Add remaining rows to the right partition
-          rightHalf.append(PartitionRowData(partitionRow.rowValue,
-            partitionRow.rowNum - rowsToAddToLeft))
+          val rowsToAddToRight = partitionRow.rowNum - rowsToAddToLeft
+          rightHalf += partitionRow.copy(rowNum = rowsToAddToRight)
+          rowsAddedToRight += rowsToAddToRight
         }
       } else {
-        rightHalf.append(partitionRow)
+        rightHalf += partitionRow
+        rowsAddedToRight += partitionRow.rowNum
       }
     }
-    val totalRowsInSplits = leftHalf.map(_.rowNum).sum + rightHalf.map(_.rowNum).sum
-    assert(totalRowsInSplits == totalRows)
+    assert((rowsAddedToLeft + rowsAddedToRight) == totalRows)
     Array(leftHalf.toArray, rightHalf.toArray)
   }
 
@@ -473,11 +489,13 @@ object BatchWithPartitionDataUtils {
       withResource(batchWithPartData) { _ =>
         // Split partition rows data into two halves
         val splitPartitionData = splitPartitionDataInHalf(batchWithPartData.partitionedRowsData)
+        if(splitPartitionData.length < 2) {
+          throw new SplitAndRetryOOM("GPU OutOfMemory: cannot split input with one row")
+        }
         // Split the batch into two halves
         val cb = batchWithPartData.inputBatch.getColumnarBatch()
-        val splitBatches = splitAndCombineBatchWithPartitionData(cb, splitPartitionData,
+        splitAndCombineBatchWithPartitionData(cb, splitPartitionData,
           batchWithPartData.partitionSchema)
-        splitBatches
       }
     }
   }
