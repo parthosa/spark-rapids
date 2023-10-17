@@ -133,7 +133,6 @@ class GpuColumnarBatchWithPartitionValuesIterator(
     }
   }
 
-
   private[this] def computeValuesAndRowNumsForBatch(batchRowNum: Int):
       (Array[InternalRow], Array[Long]) = {
     val leftTotalRowNum = leftRowNums.sum
